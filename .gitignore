@@ -177,3 +177,4 @@ convert_to_hf.py
 citynetworks_croissant.json
 influence_test.py
 influence_test_run.sh
+wandb/
