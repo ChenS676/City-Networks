@@ -10,6 +10,8 @@ from torch_geometric.nn import (
     GAT,
     MLP,
 )
+from benchmark.sgformer import GT, NAGphormer, GraphGPS
+
 
 def parse_method(args, c, d, device):
     if args.method == 'mlp':
@@ -75,6 +77,20 @@ def parse_method(args, c, d, device):
             graph_weight=0.8, 
             aggregate='add',
         ).to(device)
+    elif args.method == 'gt':
+        model = GT(d, args.hidden_channels, c, args.num_layers,
+                args.dropout, args.num_heads)
+
+    elif args.method == 'nagphormer':
+        model = NAGphormer(d, args.hidden_channels, c, args.num_layers,
+                        args.dropout, num_hops=args.num_layers,
+                        num_heads=args.num_heads)
+
+    elif args.method == 'graphgps':
+        model = GraphGPS(d, args.hidden_channels, c, args.num_layers,
+                        args.dropout, num_heads=args.num_heads,
+                        local_gnn_type='GCN')
+
     else:
         raise ValueError('Invalid method')
     return model
@@ -87,10 +103,10 @@ def parser_add_main_args(parser):
     parser.add_argument('--data_dir', type=str, default='./citynetworks_data')
     parser.add_argument('--device', type=int, default=0,
                         help='which gpu to use if any (default: 0)')
-    parser.add_argument('--seed', type=int, default=123)
+    parser.add_argument('--seed', type=int, default=321)
     parser.add_argument('--cpu', action='store_true')
     parser.add_argument('--epochs', type=int, default=5)
-    parser.add_argument('--runs', type=int, default=5,
+    parser.add_argument('--runs', type=int, default=1,
                         help='number of distinct runs')
     parser.add_argument('--train_prop', type=float, default=.1,
                         help='training label proportion')
@@ -135,6 +151,23 @@ def parser_add_main_args(parser):
     parser.add_argument('--ours_layers', type=int, default=2, help='gnn layer.')
     parser.add_argument('--transformer_dropout', type=float, default=0.1, help='transformer dropout.')
     parser.add_argument('--aggregate', type=str, default='add', help='aggregate type, add or cat.')
+
+    # GT
+    parser.add_argument('--concat_heads', action='store_true', default=True,
+                        help='Concatenate attention heads in GT (True) or average (False)')
+
+    # NAGphormer
+    parser.add_argument('--num_hops', type=int, default=3,
+                        help='Number of propagation hops K for NAGphormer Hop2Token')
+
+    #  GraphGPS
+    parser.add_argument('--local_gnn_type', type=str, default='GCN',
+                        choices=['GCN', 'GIN'],
+                        help='Local MPNN type inside each GraphGPS layer')
+
+    # Shared across all three (may already exist for SGFormer) 
+    parser.add_argument('--num_transformer_heads', type=int, default=4,
+                        help='Number of attention heads (GT, NAGphormer, GraphGPS)')
 
     # training
     parser.add_argument('--lr', type=float, default=0.01)

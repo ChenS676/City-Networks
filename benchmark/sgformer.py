@@ -3,6 +3,9 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch_sparse import SparseTensor, matmul
 from torch_geometric.utils import degree
+from torch_geometric.nn import GCNConv, TransformerConv, GINConv
+from torch_geometric.utils import to_dense_adj
+
 
 
 class GraphConvLayer(nn.Module):
@@ -90,6 +93,7 @@ class GraphConv(nn.Module):
             if self.use_residual:
                 x = x + layer_[-1]
         return x
+
 
 class TransConvLayer(nn.Module):
     '''
@@ -282,3 +286,304 @@ class SGFormer(nn.Module):
         self.trans_conv.reset_parameters()
         if self.use_graph:
             self.graph_conv.reset_parameters()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Shared base (same as models.py)
+# ─────────────────────────────────────────────────────────────────────────────
+class _BaseGNN(nn.Module):
+    def __init__(self, in_channels, hidden_channels, out_channels, dropout):
+        super().__init__()
+        self.input_proj  = nn.Linear(in_channels,     hidden_channels)
+        self.output_proj = nn.Linear(hidden_channels, out_channels)
+        self.activation  = nn.SiLU()
+        self.dropout     = dropout
+
+    def _pre(self, x):
+        x = self.input_proj(x)
+        x = self.activation(x)
+        return F.dropout(x, p=self.dropout, training=self.training)
+
+    def _post(self, x):
+        return self.output_proj(x)
+
+    def _drop_act(self, x):
+        x = self.activation(x)
+        return F.dropout(x, p=self.dropout, training=self.training)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 1. GT — Graph Transformer  (Dwivedi & Bresson, 2020)
+#    Uses TransformerConv from PyG as each layer.
+#    Extra params: num_heads, use_edge_attr (bool)
+# ─────────────────────────────────────────────────────────────────────────────
+class GT(_BaseGNN):
+    """
+    Vanilla Graph Transformer built from PyG's TransformerConv.
+    Each layer runs multi-head attention over the local neighbourhood
+    (i.e. edges defined by edge_index), identical to the original GT paper.
+
+    Extra params
+    ------------
+    num_heads    : number of attention heads (hidden_channels must be divisible)
+    concat       : if True, concatenate heads (keeps dim = hidden_channels);
+                   if False, average heads
+    """
+    def __init__(
+        self,
+        in_channels,
+        hidden_channels,
+        out_channels,
+        num_layers=2,
+        dropout=0.5,
+        num_heads=4,        # GT-specific
+        concat=True,        # GT-specific
+    ):
+        assert hidden_channels % num_heads == 0, \
+            "hidden_channels must be divisible by num_heads"
+        super().__init__(in_channels, hidden_channels, out_channels, dropout)
+        self.num_layers = num_layers
+        head_dim = hidden_channels // num_heads
+
+        self.convs = nn.ModuleList([
+            TransformerConv(
+                in_channels=hidden_channels,
+                out_channels=head_dim,
+                heads=num_heads,
+                dropout=dropout,
+                concat=concat,          # output dim = head_dim * num_heads = hidden_channels
+                beta=False,
+            )
+            for _ in range(num_layers)
+        ])
+        self.norms = nn.ModuleList([
+            nn.LayerNorm(hidden_channels) for _ in range(num_layers)
+        ])
+
+    def forward(self, x, edge_index, edge_weight=None):
+        x = self._pre(x)
+        for conv, norm in zip(self.convs, self.norms):
+            x = x + conv(x, edge_index)    # residual connection
+            x = norm(x)
+            x = self._drop_act(x)
+        return self._post(x)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 2. NAGphormer  (Chen et al., ICLR 2023)
+#    Pre-computes K-hop neighbourhood aggregations (Hop2Token),
+#    then runs a Transformer encoder over the K+1 tokens per node.
+#    Scales to large graphs because it uses mini-batch training on nodes.
+#
+#    Extra params: num_hops (K), num_heads
+# ─────────────────────────────────────────────────────────────────────────────
+class Hop2Token(nn.Module):
+    """
+    Pre-computes { A^0 x, A^1 x, ..., A^K x } and projects each hop
+    into hidden_channels, producing a sequence of K+1 tokens per node.
+    This is done once before training (or per batch during NeighborLoader).
+    """
+    def __init__(self, in_channels, hidden_channels, num_hops):
+        super().__init__()
+        self.num_hops = num_hops
+        # one linear projection per hop
+        self.hop_encoders = nn.ModuleList([
+            nn.Linear(in_channels, hidden_channels)
+            for _ in range(num_hops + 1)
+        ])
+
+    def propagate(self, x, edge_index, num_nodes):
+        """One step of normalised adjacency propagation  (D^{-1/2} A D^{-1/2} x)."""
+        from torch_geometric.utils import add_self_loops, degree
+        row, col = edge_index
+        deg      = degree(col, num_nodes, dtype=x.dtype).clamp(min=1)
+        norm     = deg.pow(-0.5)
+        x_prop   = norm[row].unsqueeze(-1) * x[col]
+        out      = torch.zeros_like(x)
+        out.scatter_add_(0, row.unsqueeze(-1).expand_as(x_prop), x_prop)
+        return out * norm.unsqueeze(-1)
+
+    def forward(self, x, edge_index, num_nodes):
+        """Returns tensor of shape (N, num_hops+1, hidden_channels)."""
+        hops = [x]
+        for _ in range(self.num_hops):
+            x = self.propagate(x, edge_index, num_nodes)
+            hops.append(x)
+        # project each hop and stack → (N, K+1, hidden_channels)
+        tokens = torch.stack(
+            [enc(h) for enc, h in zip(self.hop_encoders, hops)],
+            dim=1,
+        )
+        return tokens
+
+
+class NAGphormer(_BaseGNN):
+    """
+    Neighborhood Aggregation Graph Transformer.
+    Each node is represented as a sequence of K+1 hop-tokens, then
+    a standard Transformer encoder learns across hops.
+
+    Extra params
+    ------------
+    num_hops  : number of propagation hops K  (analogous to ChebNet's K)
+    num_heads : number of attention heads in the Transformer encoder
+    """
+    def __init__(
+        self,
+        in_channels,
+        hidden_channels,
+        out_channels,
+        num_layers=2,
+        dropout=0.5,
+        num_hops=3,         # NAGphormer-specific: hop depth K
+        num_heads=4,        # NAGphormer-specific: transformer heads
+    ):
+        # _BaseGNN's input_proj is not used here; Hop2Token handles projection
+        super().__init__(in_channels, hidden_channels, out_channels, dropout)
+        self.num_layers = num_layers
+        self.num_hops   = num_hops
+
+        self.hop2token = Hop2Token(in_channels, hidden_channels, num_hops)
+
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=hidden_channels,
+            nhead=num_heads,
+            dim_feedforward=hidden_channels * 2,
+            dropout=dropout,
+            activation="gelu",
+            batch_first=True,   # (batch, seq, dim)
+            norm_first=True,    # pre-norm (more stable)
+        )
+        self.transformer = nn.TransformerEncoder(
+            encoder_layer,
+            num_layers=num_layers,
+        )
+
+        # attention-based readout: learn a weight per hop token
+        self.readout_attn = nn.Linear(hidden_channels, 1)
+
+    def forward(self, x, edge_index, edge_weight=None):
+        num_nodes = x.size(0)
+
+        # (N, K+1, hidden_channels)
+        tokens = self.hop2token(x, edge_index, num_nodes)
+        tokens = F.dropout(tokens, p=self.dropout, training=self.training)
+
+        # Transformer encoder over the hop sequence
+        # tokens: (N, K+1, H)
+        out = self.transformer(tokens)   # (N, K+1, H)
+
+        # attention-based readout: weighted sum across hop tokens
+        attn_w = self.readout_attn(out).squeeze(-1)  # (N, K+1)
+        attn_w = torch.softmax(attn_w, dim=-1).unsqueeze(-1)  # (N, K+1, 1)
+        node_repr = (out * attn_w).sum(dim=1)         # (N, H)
+
+        node_repr = F.dropout(node_repr, p=self.dropout, training=self.training)
+        return self._post(node_repr)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 3. GraphGPS  (Rampášek et al., NeurIPS 2022)
+#    Each layer = local MPNN  +  global Transformer  (summed, then normed).
+#    Decouples local message-passing from global self-attention.
+#
+#    Extra params: num_heads, local_gnn_type ('GCN' | 'GIN')
+# ─────────────────────────────────────────────────────────────────────────────
+class GPSLayer(nn.Module):
+    """
+    One GPS layer: local MPNN + global Transformer + residual + LayerNorm.
+    """
+    def __init__(self, hidden_channels, num_heads, dropout, local_gnn_type="GCN"):
+        super().__init__()
+        assert hidden_channels % num_heads == 0
+
+        # ── local MPNN ──────────────────────────────────────────────────────
+        if local_gnn_type == "GCN":
+            self.local_model = GCNConv(hidden_channels, hidden_channels)
+        elif local_gnn_type == "GIN":
+            self.local_model = GINConv(nn.Sequential(
+                nn.Linear(hidden_channels, hidden_channels),
+                nn.SiLU(),
+                nn.Linear(hidden_channels, hidden_channels),
+            ))
+        else:
+            raise ValueError(f"Unknown local_gnn_type: {local_gnn_type}")
+
+        # ── global Transformer (full self-attention over batch) ───────────
+        self.global_attn = nn.MultiheadAttention(
+            embed_dim=hidden_channels,
+            num_heads=num_heads,
+            dropout=dropout,
+            batch_first=True,
+        )
+
+        self.norm1   = nn.LayerNorm(hidden_channels)
+        self.norm2   = nn.LayerNorm(hidden_channels)
+        self.ff      = nn.Sequential(
+            nn.Linear(hidden_channels, hidden_channels * 2),
+            nn.SiLU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_channels * 2, hidden_channels),
+        )
+        self.norm3   = nn.LayerNorm(hidden_channels)
+        self.dropout = dropout
+
+    def forward(self, x, edge_index, batch=None):
+        """
+        x          : (N, H)
+        edge_index : (2, E)
+        batch      : (N,) node-to-graph assignment — None means single graph
+        """
+        # ── local branch ────────────────────────────────────────────────────
+        h_local = self.local_model(x, edge_index)
+        h_local = F.dropout(h_local, p=self.dropout, training=self.training)
+
+        # ── global branch (full attention within each graph in the batch) ──
+        # For NeighborLoader mini-batches, each sub-graph is treated as one
+        # "sequence". We reshape: (N, H) → (1, N, H) and attend over all N.
+        h_global, _ = self.global_attn(
+            x.unsqueeze(0), x.unsqueeze(0), x.unsqueeze(0)
+        )                             # (1, N, H)
+        h_global = h_global.squeeze(0)  # (N, H)
+        h_global = F.dropout(h_global, p=self.dropout, training=self.training)
+
+        # ── combine + norm ───────────────────────────────────────────────────
+        x = self.norm1(x + h_local + h_global)
+
+        # ── feed-forward ─────────────────────────────────────────────────────
+        x = self.norm2(x + self.ff(x))
+        return x
+
+
+class GraphGPS(_BaseGNN):
+    """
+    General, Powerful, Scalable Graph Transformer (GPS).
+    Combines a local GNN and global Transformer in each layer.
+
+    Extra params
+    ------------
+    num_heads       : attention heads for the global Transformer
+    local_gnn_type  : 'GCN' | 'GIN'  — local message-passing model
+    """
+    def __init__(
+        self,
+        in_channels,
+        hidden_channels,
+        out_channels,
+        num_layers=2,
+        dropout=0.5,
+        num_heads=4,            # GPS-specific
+        local_gnn_type="GCN",  # GPS-specific
+    ):
+        super().__init__(in_channels, hidden_channels, out_channels, dropout)
+        self.num_layers = num_layers
+        self.layers = nn.ModuleList([
+            GPSLayer(hidden_channels, num_heads, dropout, local_gnn_type)
+            for _ in range(num_layers)
+        ])
+
+    def forward(self, x, edge_index, edge_weight=None):
+        x = self._pre(x)
+        for layer in self.layers:
+            x = layer(x, edge_index)
+        return self._post(x)
