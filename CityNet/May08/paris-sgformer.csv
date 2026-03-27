@@ -1,0 +1,2 @@
+dataset,method,num_layers,num_hops,epochs,lr,weight_decay,hidden_channels,dropout,runs,train_per_seed,val_per_seed,test_per_seed,mean_train_acc,std_train_acc,mean_val_acc,std_val_acc,mean_test_acc,std_test_acc
+paris,sgformer,2,2,30000,0.0005,1e-05,64,0.2,3,49.30;50.09;49.55,25.11;26.41;26.37,26.35;27.00;27.23,49.65,0.4,25.96,0.74,26.86,0.46

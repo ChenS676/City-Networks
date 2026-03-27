@@ -55,7 +55,7 @@ run_models(){
 
 # Uncomment to execute in parallel
 DATASETS=(
-    #"london"
+    # "london"
     "la"
     # "paris"
     # "shanghai"
@@ -64,14 +64,14 @@ DATASETS=(
 # Given a machine with 4 GPUs and 40 cores,
 # the tasks can be executed in parallel
 for data in ${DATASETS[@]}; do
-    # run_models $data gcn    0 10 10 &
-    # run_models $data cheb    0 0 10 &
-    # run_models $data sage    0 0 10 &
+    run_models $data gcn    0 10 10 &
+    run_models $data cheb    0 0 10 &
+    run_models $data sage    0 0 10 &
 
     # GPU 1 — cores 20-39, partitioned evenly (5 each, no overlap)
-    # run_models $data sgformer    1 20  5 &
-    run_models $data nagphormer  1 0  5 &
-    run_models $data graphgps    1 6  5 &
-    run_models $data gt          1 11  5 &
+    run_models $data sgformer    1 20  5 &
+    run_models $data nagphormer  0 0  5 &
+    run_models $data graphgps    0 6  5 &
+    # run_models $data gt          1 11  5 &
 done
 

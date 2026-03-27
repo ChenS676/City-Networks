@@ -1,0 +1,2 @@
+dataset,method,num_layers,num_hops,epochs,lr,weight_decay,hidden_channels,dropout,runs,train_per_seed,val_per_seed,test_per_seed,mean_train_acc,std_train_acc,mean_val_acc,std_val_acc,mean_test_acc,std_test_acc
+la,gt,2,2,30000,0.0005,1e-05,64,0.2,3,32.63;33.23;32.72,25.74;25.85;25.94,25.76;25.90;25.62,32.86,0.32,25.84,0.1,25.76,0.14

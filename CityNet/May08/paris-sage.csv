@@ -1,0 +1,2 @@
+dataset,method,num_layers,num_hops,epochs,lr,weight_decay,hidden_channels,dropout,runs,train_per_seed,val_per_seed,test_per_seed,mean_train_acc,std_train_acc,mean_val_acc,std_val_acc,mean_test_acc,std_test_acc
+paris,sage,2,2,30000,0.0005,1e-05,64,0.2,3,30.79;29.95;33.98,24.14;24.23;23.90,24.17;24.01;24.38,31.57,2.13,24.09,0.17,24.19,0.19

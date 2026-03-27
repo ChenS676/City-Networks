@@ -1,0 +1,2 @@
+dataset,method,num_layers,num_hops,epochs,lr,weight_decay,hidden_channels,dropout,runs,train_per_seed,val_per_seed,test_per_seed,mean_train_acc,std_train_acc,mean_val_acc,std_val_acc,mean_test_acc,std_test_acc
+paris,cheb,2,2,30000,0.0005,1e-05,64,0.2,3,33.57;36.26;41.11,23.95;24.41;24.20,22.11;21.96;22.15,36.98,3.82,24.19,0.23,22.07,0.1

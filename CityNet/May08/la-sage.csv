@@ -1,0 +1,3 @@
+dataset,method,num_layers,num_hops,epochs,lr,weight_decay,hidden_channels,dropout,runs,train_per_seed,val_per_seed,test_per_seed,mean_train_acc,std_train_acc,mean_val_acc,std_val_acc,mean_test_acc,std_test_acc
+la,sage,2,2,30000,0.0005,1e-05,64,0.2,3,27.21;27.46;28.56,22.46;22.66;22.53,22.52;22.58;22.18,27.74,0.72,22.55,0.1,22.43,0.21
+la,sage,2,2,30000,0.0005,1e-05,64,0.2,3,27.36;28.34;28.12,22.22;22.22;22.81,22.33;22.30;22.58,27.94,0.51,22.42,0.34,22.41,0.15

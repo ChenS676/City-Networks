@@ -103,7 +103,7 @@ def parser_add_main_args(parser):
     parser.add_argument('--data_dir', type=str, default='./citynetworks_data')
     parser.add_argument('--device', type=int, default=0,
                         help='which gpu to use if any (default: 0)')
-    parser.add_argument('--seed', type=int, default=321)
+    parser.add_argument('--seed', type=int, default=123)
     parser.add_argument('--cpu', action='store_true')
     parser.add_argument('--epochs', type=int, default=5)
     parser.add_argument('--runs', type=int, default=1,
