@@ -11,8 +11,8 @@ to a dedicated CSV file at the end of each run:
     <data_name>/profiling/profiling_summary.csv           (one row per run, appended)
 
 Usage:
-    python train_heart.py --data_name "Cora" --data_root "data/Cora"
-    python train_heart.py --data_name "CiteSeer" --data_root "data/CiteSeer"
+    python train.py --data_name "Cora" --data_root "data/Cora"
+    python train.py --data_name "CiteSeer" --data_root "data/CiteSeer"
 """
 
 import os
