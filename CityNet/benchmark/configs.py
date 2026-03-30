@@ -191,3 +191,4 @@ def parser_add_main_args(parser):
     parser.add_argument('--influence_dir', type=str, default='influence_results/testing')
     parser.add_argument('--num_samples_influence', type=int, default=200, 
                         help='number of samples to calculate influence scores')
+    return parser
