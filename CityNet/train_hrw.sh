@@ -197,7 +197,7 @@ DATASETS=(
 for DATA in "${DATASETS[@]}"; do
 
     # ── HierarchialRW ────────────────────────────────────────────────────────────────
-    run_hierarchial_rw  "$DATA"           3  30  8 &
+    run_hierarchial_rw  "$DATA"           0  0  8 &
 
 done
 
