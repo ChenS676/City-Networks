@@ -34,7 +34,7 @@ def train(model, loader, optimizer, device):
         graph = graph.to(device)
         optimizer.zero_grad()
         # Note here the first graph.batch_size nodes are the seed nodes,
-        # as implemented in NeighborLoader
+
         output = model(graph.x, graph.edge_index)[:graph.batch_size]
         labels = graph.y[:graph.batch_size]
         loss = F.cross_entropy(output, labels)
@@ -66,16 +66,14 @@ def main(args, logging_dict):
     seed_everything(args.seed)
     device = torch.device(f"cuda:{args.device}")
 
-    # ── W&B: initialise a run per seed ──────────────────────────────────────
     run = wandb.init(
         project=args.wandb_project,
         entity=args.wandb_entity if args.wandb_entity else None,
         group=f"{args.experiment_name}_{args.dataset}_{args.method}",
         name=f"seed-{args.seed:02d}",
         config=vars(args),
-        reinit=True,  # allow multiple runs in the same process (multi-seed loop)
+        reinit=True,  
     )
-    # ────────────────────────────────────────────────────────────────────────
 
     print(f"Loading {args.dataset}...")
     if args.dataset in ["paris", "shanghai", "la", "london"]:
@@ -131,7 +129,7 @@ def main(args, logging_dict):
 
     num_parameters = count_parameters(model)
 
-    # ── W&B: log runtime graph/model stats not available at arg-parse time ───
+    # W&B: log runtime graph/model stats not available at arg-parse time ───
     wandb.config.update({
         "num_nodes":      data.num_nodes,
         "num_edges":      data.num_edges,
@@ -140,8 +138,7 @@ def main(args, logging_dict):
         "num_parameters": num_parameters,
     })
     wandb.watch(model, log="all", log_freq=max(1, args.display_step))
-    # ────────────────────────────────────────────────────────────────────────
-
+    
     start_time = time()
     epoch_list, loss_list, train_score_list, valid_score_list, test_score_list = [], [], [], [], []
     best_acc_val, best_val_epoch = 0, 0
@@ -159,17 +156,16 @@ def main(args, logging_dict):
         # Train
         acc_train, f1_train, tot_loss = train(model, train_loader, optimizer, device)
 
-        # ── W&B: log training metrics every epoch ────────────────────────────
+        # ── W&B: log training metrics every epoch 
         wandb.log({"epoch": e + 1, "train/loss": tot_loss,
                    "train/acc": acc_train, "train/f1": f1_train}, step=e + 1)
-        # ────────────────────────────────────────────────────────────────────
-
+        
         # Evaluation
         if e == 0 or (e + 1) % args.display_step == 0:
             acc_val,  f1_val  = evaluate(model, valid_loader, device)
             acc_test, f1_test = evaluate(model, test_loader,  device)
 
-            # ── W&B: log val/test metrics ─────────────────────────────────────
+            # ── W&B: log val/test metrics 
             wandb.log({
                 "epoch":    e + 1,
                 "val/acc":  acc_val,
@@ -177,7 +173,6 @@ def main(args, logging_dict):
                 "test/acc": acc_test,
                 "test/f1":  f1_test,
             }, step=e + 1)
-            # ─────────────────────────────────────────────────────────────────
 
             # Update scores at the best validation epoch
             if acc_val > best_acc_val:
@@ -255,14 +250,6 @@ def main(args, logging_dict):
             print(f"Training logs and results saved at: {file.name}")
             json.dump(logging_dict, file, indent=4)
 
-    # Plot the training logs
-    # plot_path = (
-    #     f"{result_folder}/"
-    #     f"epochs-{args.epochs}_nlayers-{args.num_layers}_nhops-{len(args.neighbors)}_training_logs.jpg"
-    # )
-    # plot_logging_info(logging_dict, plot_path)
-    # wandb.log({"training_curves": wandb.Image(plot_path)})
-
     wandb.save(json_path)
 
     print(f"Seed {args.seed:02d}")
@@ -271,9 +258,9 @@ def main(args, logging_dict):
     print(f"Val   Acc at Best Val : {best_acc_val * 100:.2f}%")
     print(f"Test  Acc at Best Val : {test_acc_at_best_val * 100:.2f}%")
 
-    # ── W&B: close this seed's run ────────────────────────────────────────────
+    # ── W&B: close this seed's run 
     wandb.finish()
-    # ─────────────────────────────────────────────────────────────────────────
+
 
     return logging_dict
 
@@ -282,12 +269,11 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="General Training Pipeline")
     parser_add_main_args(parser)
 
-    # ── W&B CLI arguments ─────────────────────────────────────────────────────
+    # ── W&B CLI arguments 
     parser.add_argument("--wandb_project", type=str, default="gnn-benchmark",
                         help="W&B project name")
     parser.add_argument("--wandb_entity", type=str, default="",
                         help="W&B entity (team or username). Leave blank for default.")
-    # ─────────────────────────────────────────────────────────────────────────
 
     args = parser.parse_args()
     args.neighbors = [-1] * args.num_layers
