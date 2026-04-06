@@ -16,7 +16,7 @@ Usage:
 """
 
 import os
-os.environ["WANDB_MODE"] = "offline"
+os.environ["WANDB_MODE"] = "online"
 import wandb
 import psutil                          # pip install psutil  (CPU RAM tracking)
 import numpy as np

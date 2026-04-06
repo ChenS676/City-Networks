@@ -1,13 +1,13 @@
 #!/bin/bash
 
 
+# for shanghai, la, paris
 
-
-python train_hrw.py \
+uv run train_hrw.py \
     --method            hierarchial_rw \
     --dataset           shanghai \
     --device            0 \
-    --runs              3 \
+    --runs              1 \
     --seed              0 \
     --epochs            30000 \
     --experiment_name   HierarchialRW_CityNet_Jun25 \
