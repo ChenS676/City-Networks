@@ -26,7 +26,19 @@ try:
 except ImportError:
     HAS_PERFORMER = False
 from torch_geometric.utils import to_undirected, is_undirected, degree
-from torch_scatter import scatter
+
+# torch_scatter is optional — fall back to pure PyTorch scatter_add
+try:
+    from torch_scatter import scatter as _ts_scatter
+    def scatter(src, index, dim, dim_size, reduce):
+        return _ts_scatter(src, index, dim=dim, dim_size=dim_size, reduce=reduce)
+except (ImportError, OSError):
+    def scatter(src, index, dim, dim_size, reduce):
+        # pure-torch fallback — only 'sum' needed by k_hop_aggregation
+        assert reduce == 'sum', f"fallback scatter only supports sum, got {reduce}"
+        out = torch.zeros(dim_size, src.size(-1), dtype=src.dtype, device=src.device)
+        out.scatter_add_(0, index.unsqueeze(-1).expand_as(src), src)
+        return out
 import torch_geometric.transforms as T
 import graphbench
 import wandb
@@ -91,6 +103,7 @@ def compute_laplacian_eigen(edge_index, num_nodes, max_freq,
 
 
 class CustomLaplacianPE:
+    """On-the-fly LapPE — slow, use only when cache is unavailable."""
     def __init__(self, max_freq, normalized=True, normalize=True):
         self.max_freq   = max_freq
         self.normalized = normalized
@@ -103,6 +116,26 @@ class CustomLaplacianPE:
         )
         data.eigvecs = eigvecs
         data.eigvals = eigvals
+        return data
+
+
+class CachedLapPE:
+    """
+    Fast LapPE: loads pre-computed eigenvectors from disk.
+    Run precompute_lap_pe.py once before using this.
+    Attaches data.eigvecs and data.eigvals with zero overhead.
+    """
+    def __init__(self, cache_file: str):
+        print(f"  Loading LapPE cache: {cache_file}")
+        saved = torch.load(cache_file, weights_only=False)
+        self.eigvecs = saved["eigvecs"]   # list[Tensor]
+        self.eigvals = saved["eigvals"]   # list[Tensor]
+        self._idx    = 0
+
+    def __call__(self, data):
+        data.eigvecs = self.eigvecs[self._idx]
+        data.eigvals = self.eigvals[self._idx]
+        self._idx   += 1
         return data
 
 
@@ -605,8 +638,8 @@ def main():
     parser.add_argument("--seed",           type=int,   default=2025)
     # Training
     parser.add_argument("--epochs",         type=int,   default=10)
-    parser.add_argument("--batch_size",     type=int,   default=256)
-    parser.add_argument("--test_batch_size",type=int,   default=32)
+    parser.add_argument("--batch_size",     type=int,   default=512)   # doubled from 256
+    parser.add_argument("--test_batch_size",type=int,   default=128)
     parser.add_argument("--train_subset_ratio", type=float, default=0.1)
     parser.add_argument("--adam_max_lr",    type=float, default=1e-4)
     parser.add_argument("--weight_decay",   type=float, default=0.0)
@@ -620,8 +653,10 @@ def main():
     parser.add_argument("--num_hops",       type=int,   default=3,
                         help="Hop depth K for NAGphormer (sequence length = K+1)")
     # Laplacian PE — always on for all models
-    parser.add_argument("--lap_pe_dim",     type=int,   default=16,
-                        help="Number of Laplacian eigenvectors (applied to all models)")
+    parser.add_argument("--lap_pe_dim",       type=int,   default=16)
+    parser.add_argument("--use_cached_lap_pe",type=lambda x: x.lower()=='true',
+                        default=False,
+                        help="Load pre-computed LapPE from disk (run precompute_lap_pe.py first)")
     # GPS-specific
     parser.add_argument("--gps_attn_type",  type=str,   default="multihead",
                         choices=["multihead", "performer", "flash"],
@@ -642,29 +677,61 @@ def main():
     print(f"Using device: {device}")
 
     # ── Dataset — LapPE always applied ───────────────────────────────────
-    transform_list = [
-        AddUndirectedContext(),
-        CustomLaplacianPE(max_freq=config["lap_pe_dim"], normalized=True, normalize=True),
-    ]
     loader  = graphbench.Loader(
         root=config["data_root"],
         dataset_names=config["dataset_name"],
-        transform=T.Compose(transform_list)
+        transform=T.Compose([AddUndirectedContext()])   # LapPE added below
     )
     dataset = loader.load()
     try:
         train_dataset = dataset[0]['train']
         val_dataset   = dataset[0]['valid']
         test_dataset  = dataset[0]['test']
+        split_map     = {"train": train_dataset, "valid": val_dataset, "test": test_dataset}
     except (TypeError, KeyError):
         train_dataset = val_dataset = test_dataset = dataset
+        split_map     = {"all": dataset}
+
+    # Attach LapPE — use cache if available, otherwise compute on-the-fly
+    def _attach_lap_pe(ds, split_name):
+        if config["use_cached_lap_pe"]:
+            cf = os.path.join(
+                config["data_root"],
+                f"{config['dataset_name']}_{split_name}_lapPE{config['lap_pe_dim']}.pt"
+            )
+            if os.path.exists(cf):
+                lap_tf = CachedLapPE(cf)
+            else:
+                print(f"  WARNING: cache not found at {cf}, falling back to on-the-fly.")
+                lap_tf = CustomLaplacianPE(config["lap_pe_dim"])
+        else:
+            lap_tf = CustomLaplacianPE(config["lap_pe_dim"])
+        return [lap_tf(ds[i]) for i in range(len(ds))]
+
+    print("Attaching LapPE ...")
+    t_pe = time.time()
+    train_dataset = _attach_lap_pe(train_dataset, "train")
+    val_dataset   = _attach_lap_pe(val_dataset,   "valid")
+    test_dataset  = _attach_lap_pe(test_dataset,  "test")
+    print(f"LapPE attached in {time.time()-t_pe:.1f}s")
 
     print(f"Sizes → Train: {len(train_dataset)} | Val: {len(val_dataset)} | Test: {len(test_dataset)}")
 
+    # Workers: use as many as available, min 0 (safe for nproc=1)
+    dl_workers = max(0, min(8, (int(os.environ.get("SLURM_CPUS_PER_TASK", 1)) // 2)))
+    print(f"DataLoader workers: {dl_workers}")
+
+    dl_kwargs = dict(
+        num_workers      = dl_workers,
+        pin_memory       = torch.cuda.is_available(),
+        persistent_workers = dl_workers > 0,
+        prefetch_factor  = 2 if dl_workers > 0 else None,
+    )
+
     val_loader  = DataLoader(val_dataset,  batch_size=config["test_batch_size"],
-                             shuffle=False, num_workers=4, pin_memory=True)
+                             shuffle=False, **dl_kwargs)
     test_loader = DataLoader(test_dataset, batch_size=config["test_batch_size"],
-                             shuffle=False, num_workers=4, pin_memory=True)
+                             shuffle=False, **dl_kwargs)
 
     _peek       = next(iter(DataLoader(train_dataset, batch_size=4, shuffle=False)))
     node_in_dim = 1 if _peek.x.dim() == 1 else _peek.x.size(1)
@@ -781,8 +848,7 @@ def main():
         indices   = [(start_idx + i) % num_train_total for i in range(window_size)]
         train_loader = DataLoader(
             torch.utils.data.Subset(train_dataset, indices),
-            batch_size=config["batch_size"], shuffle=True,
-            num_workers=4, pin_memory=True
+            batch_size=config["batch_size"], shuffle=True, **dl_kwargs
         )
         model.train()
         epoch_t0 = time.time()
