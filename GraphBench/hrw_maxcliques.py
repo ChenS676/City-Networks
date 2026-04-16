@@ -133,6 +133,7 @@ class LPE(nn.Module):
 
 
 class CustomLaplacianPE:
+    """On-the-fly LapPE — slow. Use --use_cached_lap_pe when possible."""
     def __init__(self, max_freq, normalized=False, normalize=False, large_graph=False):
         self.max_freq = max_freq; self.normalized = normalized
         self.normalize = normalize; self.large_graph = large_graph
@@ -143,6 +144,33 @@ class CustomLaplacianPE:
             self.normalized, self.normalize, self.large_graph
         )
         data.eigvecs = eigvecs; data.eigvals = eigvals
+        return data
+
+
+class CachedLapPE:
+    """
+    Fast LapPE: load pre-computed eigenvectors from disk (zero CPU cost per step).
+    Generate the cache with: python precompute_lap_pe.py
+    """
+    def __init__(self, cache_file: str):
+        print(f"  Loading LapPE cache: {cache_file}")
+        saved = torch.load(cache_file, weights_only=False)
+        self.eigvecs = saved["eigvecs"]
+        self.eigvals = saved["eigvals"]
+        self._idx    = 0
+
+    def reset(self):
+        self._idx = 0
+
+    def __call__(self, data):
+        if self._idx >= len(self.eigvecs):
+            raise IndexError(
+                f"CachedLapPE ran out of entries at idx={self._idx} "
+                f"(cache has {len(self.eigvecs)} entries). Call .reset() before reuse."
+            )
+        data.eigvecs = self.eigvecs[self._idx]
+        data.eigvals = self.eigvals[self._idx]
+        self._idx   += 1
         return data
 
 
@@ -267,14 +295,25 @@ class Transformer(nn.Module):
         self.norm_weight = nn.Parameter(torch.ones(hidden_dim))
 
     def forward(self, x, anon_indices, source_nodes=None):
-        #TODO what is the input of the model
-        _, ctx_len, _ = x.shape
+        # x: [N, num_walks * walk_length, encoding_dim]
+        # anon_indices: list of [N, num_walks * walk_length] anonymised walk indices
+        # For recurrent_steps > 1, anon_indices has multiple entries.
+        # Each step: run transformer layers, then if not the last step,
+        # take the last token of each walk group and re-expand for the next level.
+        N, ctx_len, D = x.shape
         for depth, idx in enumerate(reversed(anon_indices)):
             for l in self.layers:
                 x = l(x, idx)
             if depth < len(anon_indices) - 1:
-                x = F.rms_norm(x[:, -1, :], [self.hidden_dim], eps=1e-5) * self.norm_weight
-                x = rearrange(x, '(n t) z -> n t z', t=ctx_len)
+                # Extract last token: [N, D], then treat each token as a new
+                # "source node" whose walk features are the next level's tokens.
+                # x has shape [N, ctx_len, D] → take last token → [N, D]
+                # Then re-expand so shape is [N_prev, ctx_len, D] for the outer level.
+                # N at this level = N_prev * ctx_len (walk nodes from prev level)
+                x_last = F.rms_norm(x[:, -1, :], [self.hidden_dim], eps=1e-5) * self.norm_weight
+                # x_last: [N, D] — N nodes at this recurrent level
+                # reshape back to [N_prev, ctx_len, D] where N_prev = N // ctx_len
+                x = x_last.view(-1, ctx_len, self.hidden_dim)
         x = F.rms_norm(x, [self.hidden_dim], eps=1e-5) * self.norm_weight
         return x[:, -1, :]
 
@@ -302,12 +341,23 @@ def get_walk_edge_attrs(edge_index, edge_attr, walks, num_nodes):
     sorted_hashes, perm = torch.sort(row.long() * num_nodes + col.long())
     src = walks[:, :, :-1].flatten().long()
     dst = walks[:, :, 1:].flatten().long()
-    idx = perm[torch.searchsorted(sorted_hashes, src * num_nodes + dst)]
-    b, w, l  = walks.shape
-    edge_dim = edge_attr.size(-1)
+    query = src * num_nodes + dst
+    # Bug fix: clamp searchsorted result and verify match before indexing perm.
+    # Walks that land on padding/isolated nodes produce hashes not in sorted_hashes;
+    # without this check perm[idx] silently returns a wrong edge attribute.
+    raw_idx   = torch.searchsorted(sorted_hashes, query).clamp(max=sorted_hashes.size(0) - 1)
+    matched   = sorted_hashes[raw_idx] == query          # [E] bool mask
+    safe_idx  = torch.where(matched, perm[raw_idx], torch.zeros_like(raw_idx))
+    b, w, l   = walks.shape
+    edge_dim  = edge_attr.size(-1)
+    step_attrs = torch.where(
+        matched.unsqueeze(-1),
+        edge_attr[safe_idx],
+        torch.zeros(matched.size(0), edge_dim, device=device, dtype=edge_attr.dtype)
+    ).view(b, w, l - 1, edge_dim)
     return torch.cat([
         torch.zeros((b, w, 1, edge_dim), device=device, dtype=edge_attr.dtype),
-        edge_attr[idx].view(b, w, l - 1, edge_dim)
+        step_attrs,
     ], dim=2)
 
 
@@ -369,7 +419,6 @@ class RWTransformerForNodeClassification(nn.Module):
             self.nw_pe_encoder = nn.Linear(2 * self.nw_pe_window, self.encoding_dim)
             nn.init.normal_(self.nw_pe_encoder.weight, std=config['mup_init_std'])
 
-        # Laplacian PE
         self.use_lap_pe = config.get("use_lap_pe", False)
         if self.use_lap_pe:
             self.lpe = LPE(
@@ -380,7 +429,6 @@ class RWTransformerForNodeClassification(nn.Module):
                 lpe_inner_dim=config["lap_pe_dim"],
             )
 
-        # Random Walk Structural Encoding (RWSE)
         self.use_rwse = config.get("use_rwse", False)
         if self.use_rwse:
             self.rwse_encoder = RWSE(
@@ -401,17 +449,16 @@ class RWTransformerForNodeClassification(nn.Module):
         )
         self.classifier = NodeDecoder(hidden_dim=self.hidden_dim, dropout=config["dropout"])
 
-    def forward(self, 
-                x, 
-                edge_index, 
-                edge_attr,
-                mp_edge_index=None, 
-                mp_edge_attr=None,
-                eigvecs=None, 
-                eigvals=None, 
-                rwse=None):
-        if x.dim() == 1:         x = x.unsqueeze(-1)
+    def forward(self, x, edge_index, edge_attr,
+                mp_edge_index=None, mp_edge_attr=None,
+                eigvecs=None, eigvals=None, rwse=None):
+        if x.dim() == 1: x = x.unsqueeze(-1)
         if edge_attr.dim() == 1: edge_attr = edge_attr.unsqueeze(-1)
+
+        walk_ei = mp_edge_index if mp_edge_index is not None else edge_index
+        deg = degree(walk_ei[1], num_nodes=x.size(0), dtype=torch.float).unsqueeze(-1)  # [N, 1]
+        # Log-scale to avoid large values on high-degree nodes
+        x = torch.log1p(deg)
 
         x_emb = self.input_norm(self.node_encoder(x.float()))
 
@@ -427,6 +474,7 @@ class RWTransformerForNodeClassification(nn.Module):
         if walk_ea.dim() == 1: walk_ea = walk_ea.unsqueeze(-1)
         walk_ea_emb = self.input_norm(self.edge_encoder(walk_ea.float()))
 
+        import IPython; IPython.embed()
         batch_feats, anon_idx, raw_walks = get_random_walk_batch(
             edge_index=walk_ei, x=x_emb,
             start_nodes=torch.arange(x.size(0), device=x.device),
@@ -495,15 +543,18 @@ def main():
     parser.add_argument("--data_root",            type=str,   default="./data_graphbench")
     parser.add_argument("--seed",                 type=int,   default=2025)
     parser.add_argument("--epochs",               type=int,   default=300)
-    parser.add_argument("--batch_size",           type=int,   default=256)
-    parser.add_argument("--test_batch_size",      type=int,   default=32)
+    # FIX 5: increased default batch size for A100
+    parser.add_argument("--batch_size",           type=int,   default=512)
+    parser.add_argument("--test_batch_size",      type=int,   default=128)
     parser.add_argument("--hidden_dim",           type=int,   default=256)
     parser.add_argument("--encoding_dim",         type=int,   default=256)
     parser.add_argument("--layers",               type=int,   default=1)
     parser.add_argument("--num_heads",            type=int,   default=8)
     parser.add_argument("--dropout",              type=float, default=0.1)
     parser.add_argument("--ffn_multiplier",       type=float, default=4.0)
-    parser.add_argument("--adam_max_lr",          type=float, default=1e-4)
+    # FIX 5b: lr scaled linearly with batch size (linear scaling rule)
+    # original: bs=256 lr=1e-4  →  bs=512 lr=2e-4
+    parser.add_argument("--adam_max_lr",          type=float, default=2e-4)
     parser.add_argument("--weight_decay",         type=float, default=0.0)
     parser.add_argument("--grad_clip_norm",       type=float, default=0.5)
     parser.add_argument("--train_subset_ratio",   type=float, default=0.2)
@@ -512,16 +563,13 @@ def main():
     parser.add_argument("--node2vec_p",           type=float, default=1.0)
     parser.add_argument("--node2vec_q",           type=float, default=1.0)
     parser.add_argument("--recurrent_steps",      type=int,   default=1)
-    # Laplacian PE
-    parser.add_argument("--use_lap_pe",           type=lambda x: x.lower()=='true', default=False,
-                        help="Enable Laplacian positional encoding")
-    parser.add_argument("--lap_pe_dim",           type=int,   default=16,
-                        help="Number of Laplacian eigenvectors")
-    # RWSE
-    parser.add_argument("--use_rwse",             type=lambda x: x.lower()=='true', default=False,
-                        help="Enable Random Walk Structural Encoding")
-    parser.add_argument("--rwse_dim",             type=int,   default=16,
-                        help="Number of RWSE steps")
+    parser.add_argument("--use_lap_pe",           type=lambda x: x.lower()=='true', default=False)
+    parser.add_argument("--lap_pe_dim",           type=int,   default=16)
+    # FIX 1: cache flag
+    parser.add_argument("--use_cached_lap_pe",    type=lambda x: x.lower()=='true', default=False,
+                        help="Load pre-computed LapPE from disk (run precompute_lap_pe.py first)")
+    parser.add_argument("--use_rwse",             type=lambda x: x.lower()=='true', default=False)
+    parser.add_argument("--rwse_dim",             type=int,   default=16)
     parser.add_argument("--nw_pe_window",         type=int,   default=7)
     parser.add_argument("--use_nw_pe",            type=lambda x: x.lower()=='true', default=False)
     parser.add_argument("--mup_init_std",         type=float, default=0.01)
@@ -544,7 +592,8 @@ def main():
 
     # ── Transforms ────────────────────────────────────────────────────────
     transforms_list = [AddUndirectedContext()]
-    if config["use_lap_pe"]:
+    # Only add on-the-fly LapPE if not using cache
+    if config["use_lap_pe"] and not config["use_cached_lap_pe"]:
         transforms_list.append(
             CustomLaplacianPE(max_freq=config["lap_pe_dim"], normalized=True, normalize=True)
         )
@@ -565,12 +614,42 @@ def main():
     except (TypeError, KeyError):
         train_dataset = val_dataset = test_dataset = dataset
 
+    # FIX 1: attach cached LapPE after loading — zero cost per training step
+    if config["use_lap_pe"] and config["use_cached_lap_pe"]:
+        def _attach(ds, split):
+            cf = os.path.join(
+                config["data_root"],
+                f"{config['dataset_name']}_{split}_lapPE{config['lap_pe_dim']}.pt"
+            )
+            if os.path.exists(cf):
+                lap_tf = CachedLapPE(cf)
+            else:
+                print(f"  WARNING: cache not found at {cf}, falling back to on-the-fly.")
+                lap_tf = CustomLaplacianPE(config["lap_pe_dim"])
+            return [lap_tf(ds[i]) for i in range(len(ds))]
+
+        print("Attaching LapPE from cache ...")
+        t0 = time.time()
+        train_dataset = _attach(train_dataset, "train")
+        val_dataset   = _attach(val_dataset,   "valid")
+        test_dataset  = _attach(test_dataset,  "test")
+        print(f"LapPE cache attached in {time.time()-t0:.1f}s")
+
     print(f"Sizes → Train: {len(train_dataset)} | Val: {len(val_dataset)} | Test: {len(test_dataset)}")
 
+    dl_workers = max(5, min(8, int(os.environ.get("SLURM_CPUS_PER_TASK", 1)) - 1))
+    print(f"DataLoader workers: {dl_workers}")
+    dl_kwargs = dict(
+        num_workers        = dl_workers,
+        pin_memory         = torch.cuda.is_available() and dl_workers > 0,
+        persistent_workers = dl_workers > 0,
+        **({"prefetch_factor": 2} if dl_workers > 0 else {}),
+    )
+
     val_loader  = DataLoader(val_dataset,  batch_size=config["test_batch_size"],
-                             shuffle=False, num_workers=4, pin_memory=True)
+                             shuffle=False, **dl_kwargs)
     test_loader = DataLoader(test_dataset, batch_size=config["test_batch_size"],
-                             shuffle=False, num_workers=4, pin_memory=True)
+                             shuffle=False, **dl_kwargs)
 
     _peek       = next(iter(DataLoader(train_dataset, batch_size=config["batch_size"], shuffle=False)))
     node_in_dim = 1 if _peek.x.dim() == 1 else _peek.x.size(1)
@@ -580,8 +659,6 @@ def main():
     model = RWTransformerForNodeClassification(
         node_in_dim, edge_in_dim, config, mup_config
     ).to(device)
-    if hasattr(torch, "compile"):
-        model = torch.compile(model)
     total_params = count_parameters(model)
     print(f"Parameters: {total_params:,}")
 
@@ -601,7 +678,19 @@ def main():
                       if hasattr(model, 'transformer') and p is not model.transformer.norm_weight]
     optimizer = torch.optim.AdamW(all_params, lr=config['adam_max_lr'],
                                   weight_decay=config['weight_decay'])
-    criterion = nn.CrossEntropyLoss()
+
+    # FIX 4: class-weighted loss for clique imbalance
+    all_labels = torch.cat([train_dataset[i].y for i in range(len(train_dataset))])
+    n_total    = all_labels.numel()
+    n_pos      = (all_labels == 1).sum().item()
+    n_neg      = n_total - n_pos
+    w_pos      = n_total / (2.0 * n_pos) if n_pos > 0 else 1.0
+    w_neg      = n_total / (2.0 * n_neg) if n_neg > 0 else 1.0
+    print(f"Class weights → neg: {w_neg:.3f}  pos: {w_pos:.3f}  "
+          f"(clique ratio: {n_pos/n_total*100:.1f}%)")
+    criterion = nn.CrossEntropyLoss(
+        weight=torch.tensor([w_neg, w_pos], dtype=torch.float, device=device)
+    )
 
     try:
         evaluator = graphbench.Evaluator(config["eval_metric_class"])
@@ -611,13 +700,13 @@ def main():
     pe_tag = []
     if config["use_lap_pe"]: pe_tag.append(f"lap{config['lap_pe_dim']}")
     if config["use_rwse"]:   pe_tag.append(f"rwse{config['rwse_dim']}")
-    pe_str = "+".join(pe_tag) if pe_tag else "none"
+    pe_str   = "+".join(pe_tag) if pe_tag else "none"
     run_name = (
-                f"NWPE{config['use_nw_pe']}"
-                f"PE-{pe_str}_"
-                f"HRW_BS{config['batch_size']}_HD{config['hidden_dim']}_"
-                f"NW{config['num_walks']}_WL{config['walk_length']}_"
-                f"LR{config['adam_max_lr']}_L{config['layers']}_"
+        f"NWPE{config['use_nw_pe']}_"
+        f"PE-{pe_str}_"
+        f"HRW_BS{config['batch_size']}_HD{config['hidden_dim']}_"
+        f"NW{config['num_walks']}_WL{config['walk_length']}_"
+        f"LR{config['adam_max_lr']}_L{config['layers']}"
     )
     wandb.init(
         entity="graph-diffusion-model-link-prediction",
@@ -674,6 +763,7 @@ def main():
     running_loss_cnt = 0
     best_val_f1, best_test_f1     = -float('inf'), -float('inf')
     best_val_step, best_test_step = 0, 0
+    vram = 0.0
 
     for epoch in range(1, config["epochs"] + 1):
         start_idx = ((epoch - 1) * window_size) % num_train_total
@@ -681,13 +771,12 @@ def main():
         train_loader = DataLoader(
             torch.utils.data.Subset(train_dataset, indices),
             batch_size=config["batch_size"], shuffle=True,
-            num_workers=8, pin_memory=True
+            **dl_kwargs   # FIX 3: dynamic workers
         )
         model.train()
         epoch_t0 = time.time()
 
         for batch_idx, data in enumerate(train_loader):
-            
             data = data.to(device)
             optimizer.zero_grad(set_to_none=True)
 
@@ -704,22 +793,24 @@ def main():
             running_loss_sum += loss.item()
             running_loss_cnt += 1
 
+            # FIX 2: mem_get_info only every 50 steps — avoids GPU sync each step
+            # if global_step % 50 == 0 and torch.cuda.is_available():
+            #     free, total_mem = torch.cuda.mem_get_info(device)
+            #     vram = (total_mem - free) / total_mem
+
             if global_step % config["log_every"] == 0:
                 wandb.log({
                     "step": global_step, "epoch": epoch,
                     "train/loss": loss.item(), "train/grad_norm": gnorm,
                     "train/lr": optimizer.param_groups[0]['lr'],
+                    # "train/vram": vram,
                 }, step=global_step)
 
-            vram = 0.0
-            if torch.cuda.is_available():
-                free, total_mem = torch.cuda.mem_get_info(device)
-                vram = (total_mem - free) / total_mem
             print(
                 f"\rEp {epoch}/{config['epochs']} "
                 f"[{batch_idx+1}/{len(train_loader)}] "
                 f"step={global_step} loss={loss.item():.4f} "
-                f"gnorm={gnorm:.3f} mem={vram:.2f} "
+                f"gnorm={gnorm:.3f} " # mem={vram:.2f}
                 f"t={time.time()-epoch_t0:.0f}s",
                 end="", flush=True
             )
@@ -813,7 +904,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
-# best uv run hrw_maxcliques.py --use_nw_pe true --nw_pe_window 7  
-# best uv run hrw_maxcliques.py --use_lap_pe true --lap_pe_dim 32

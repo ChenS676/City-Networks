@@ -5,10 +5,10 @@
 
 CUDA_LAUNCH_BLOCKING=1 uv run train_hrw.py \
     --method            hierarchial_rw \
-    --dataset           paris \
+    --dataset           la \
     --device            0 \
-    --runs              1 \
-    --seed              0 \
+    --runs              3 \
+    --seed              1 \
     --epochs            30000 \
     --experiment_name   HierarchialRW_CityNet_Jun25 \
     --display_step      100 \
