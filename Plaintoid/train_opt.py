@@ -618,13 +618,6 @@ def evaluate_and_log_dp(
         best_val_eval_metric = val_metric
         best_val_epoch = epoch + 1
         
-        # if wandb.run is not None:
-        #     wandb.run.summary['best_val_epoch'] = best_val_epoch
-        
-        # save_dict = {'model_state_dict': model.state_dict(), 'config': config}
-        # if config['use_mlp']:
-        #     save_dict['link_predictor_state_dict'] = link_predictor.state_dict()
-        # torch.save(save_dict, BEST_MODEL_PATH)
         epochs_without_improvement = 0
     else:
         epochs_without_improvement += 1
@@ -689,7 +682,7 @@ def get_config():
     model_group.add_argument('--intermediate_dim_multiplier', type=int, default=4,
                              help='Multiplier for intermediate FFN dim')
     model_group.add_argument('--num_heads', type=int, default=16, help='Number of attention heads')
-    model_group.add_argument('--recurrent_steps', type=int, default=2, help='Number of recurrent steps for CWUE')
+    model_group.add_argument('--recurrent_steps', type=int, default=3, help='Number of recurrent steps for CWUE')
     model_group.add_argument('--mup_init_std', type=float, default=0.01, help='MuP initialization standard deviation')
     model_group.add_argument('--mup_width_multiplier', type=float, default=2.0, help='MuP width multiplier')
     
@@ -871,11 +864,11 @@ def main():
 
     # Initialize wandb
     if config['use_deepwalk_embeds']:
-        run_display_name = f"dp_pos_encoding_deepwalk_recurrent_steps_{config['recurrent_steps']}_bs_{config['global_batch_size']}_muon-max-lr_{config['muon_max_lr']}_adam_max_lr_{config['adam_max_lr']}_nwalks_{config['num_walks']}_wl_{config['walk_length']}_seed_{config['seed']}"
+        run_display_name = f"dp_{config['recurrent_steps']}_bs_{config['global_batch_size']}_muon-max-lr_{config['muon_max_lr']}_adam_max_lr_{config['adam_max_lr']}_nwalks_{config['num_walks']}_wl_{config['walk_length']}_seed_{config['seed']}"
     elif config['use_laplacian_pe']:
-        run_display_name = f"dp_pos_encoding_laplacian_recurrent_steps_{config['recurrent_steps']}_bs_{config['global_batch_size']}_muon-max-lr_{config['muon_max_lr']}_adam_max_lr_{config['adam_max_lr']}_nwalks_{config['num_walks']}_wl_{config['walk_length']}_seed_{config['seed']}"
+        run_display_name = f"dp_{config['recurrent_steps']}_bs_{config['global_batch_size']}_muon-max-lr_{config['muon_max_lr']}_adam_max_lr_{config['adam_max_lr']}_nwalks_{config['num_walks']}_wl_{config['walk_length']}_seed_{config['seed']}"
     else:
-        run_display_name = f"dp_pos_encoding_False_recurrent_steps_{config['recurrent_steps']}_bs_{config['global_batch_size']}_muon-max-lr_{config['muon_max_lr']}_adam_max_lr_{config['adam_max_lr']}_nwalks_{config['num_walks']}_wl_{config['walk_length']}_seed_{config['seed']}"
+        run_display_name = f"dp_{config['recurrent_steps']}_bs_{config['global_batch_size']}_muon-max-lr_{config['muon_max_lr']}_adam_max_lr_{config['adam_max_lr']}_nwalks_{config['num_walks']}_wl_{config['walk_length']}_seed_{config['seed']}"
 
     if config["train_edge_downsample_ratio"] < 1.0:
         run_display_name = f"{run_display_name}_edge_dws_{config['train_edge_downsample_ratio']}"
@@ -883,14 +876,14 @@ def main():
     if config['use_mlp']:
         wandb.init(
             entity=config['wb_entity'],
-            project=f"{config['data_name']}_dp_rw-cwue_latest_dec_{config['seed']}",
+            project=config['wb_project'],
             group=f"{config['data_name']} DP Random Walk Link Prediction MLP",
             name=run_display_name, config=config
         )
     else:
         wandb.init(
             entity=config['wb_entity'],
-            project=f"{config['data_name']}_dp_rw-cwue_latest_dec_{config['seed']}",
+            project=config['wb_project'],
             group=f"{config['data_name']} DP Random Walk Link Prediction Dot Product",
             name=run_display_name, config=config
         )
@@ -968,7 +961,6 @@ def main():
     cool = (total_batches - warmup)
 
     X = data.x.to(device).bfloat16()
-
     # Setup optimizer
     hidden_weights = [p for p in model.parameters() if p.ndim >= 2 and p.requires_grad]
     hidden_gains_biases = [p for p in model.parameters() if p.ndim < 2 and p.requires_grad]
@@ -1111,10 +1103,8 @@ def main():
                 all_params_to_clip = chain(model.parameters(), link_predictor.parameters())
             
             torch.nn.utils.clip_grad_norm_(all_params_to_clip, float(config['grad_clip_norm']))
-            
             opt.step()
             opt.zero_grad(set_to_none=True)
-            
             avg_loss = running_loss
             
             wandb.log({
@@ -1122,8 +1112,8 @@ def main():
                 'mlp_grad_norm': mlp_grad_norm,
                 'lr': muon_lr,
             }, step=global_batch_idx)
+
             running_loss = 0.0
-            
             free, total = torch.cuda.mem_get_info(device)
             used = (total - free) / total
             pbar.set_description(f"loss: {loss.item():.4f}, mem: {used:.2f}, batch_time: {time.time() - start_time_batch:.2f}s")
@@ -1167,13 +1157,6 @@ def main():
         print(f"   Peak vRAM used: {peak_gib:.3f} GiB")
         print(f"   Current vRAM: {current_gib:.3f} GiB")
 
-    # wandb_best_val_log = {f'best_val_{k}': v for k, v in best_val_metrics.items()}
-    # wandb_best_test_log = {f'best_test_{k}': v for k, v in best_test_metrics.items()}
-    # wandb.log({
-    #     **wandb_best_val_log,
-    #     **wandb_best_test_log,
-    #     'best_val_epoch': best_val_epoch
-    # })
 
     print(f"Best Validation {config['eval_metric']}: {best_val_eval_metric:.4f} at epoch {best_val_epoch}")
     best_val_metrics_str = ", ".join([f"{k}: {v:.4f}" for k, v in best_val_metrics.items()])

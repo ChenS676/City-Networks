@@ -27,18 +27,18 @@ dependencies = [
     "transformers>=4.52.4",
     "wandb>=0.21.0",
     "graphbench-lib",
-    "muon>=0.1.7",
+    "jupytext>=1.19.1",
 ]
 
 [tool.uv.sources]
 cut-cross-entropy = { git = "https://github.com/apple/ml-cross-entropy.git" }
-muon-optimizer = { git = "https://github.com/KellerJordan/Muon" }
 graphbench-lib = { git = "https://github.com/graphbench/package" } # <--- Add this line
 torch = [{ index = "pytorch" }]
 torchvision = [{ index = "pytorch" }]
 torch-sparse = [{ index = "pytorch-geometric" }]
 torch-scatter = [{ index = "pytorch-geometric" }]
 torch-cluster = [{ index = "pytorch-geometric" }]
+muon-optimizer = { git = "https://github.com/KellerJordan/Muon.git" }
 
 [[tool.uv.index]]
 name = "nvidia"

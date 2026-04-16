@@ -43,7 +43,6 @@ from ogb.linkproppred import Evaluator
 import pandas as pd
 import tqdm.auto as tqdm
 from muon import SingleDeviceMuonWithAuxAdam
-
 from evalutors import evaluate_hits, evaluate_mrr, evaluate_auc
 
 # Import all model components from the extracted model file

@@ -3,9 +3,9 @@
 
 # for shanghai, la, paris
 
-uv run train_hrw.py \
+CUDA_LAUNCH_BLOCKING=1 uv run train_hrw.py \
     --method            hierarchial_rw \
-    --dataset           shanghai \
+    --dataset           paris \
     --device            0 \
     --runs              1 \
     --seed              0 \

@@ -20,11 +20,11 @@ Usage:
     python train.py --method gcn   --dataset paris --device 0
 
     # HierarchialRW
-    python train.py --method hierarchial_rw --dataset paris --device 0 \
+    python train_hrw.py --method hierarchial_rw --dataset paris --device 0 \
         --hierarchial_rw_walk_length 8 --hierarchial_rw_num_walks 16 --hierarchial_rw_hidden_dim 128
 """
-
 import os
+os.environ["WANDB_MODE"] = "online"
 import csv
 import math
 import time
@@ -256,9 +256,14 @@ def anonymize_rws(rws: torch.Tensor, rev_walks: bool = True) -> torch.Tensor:
 
 @torch.no_grad()
 def get_random_walk_batch(
-    adj: SparseTensor, x: torch.Tensor, start_nodes: torch.Tensor,
-    walk_length: int, num_walks: int, recurrent_steps: int = 1,
-    p: float = 1.0, q: float = 1.0,
+    adj: SparseTensor, 
+    x: torch.Tensor, 
+    start_nodes: torch.Tensor,
+    walk_length: int, 
+    num_walks: int, 
+    recurrent_steps: int = 1,
+    p: float = 1.0, 
+    q: float = 1.0,
 ) -> Tuple[torch.Tensor, List[torch.Tensor]]:
     row, col, _ = adj.coo()
     row, col    = row.to(x.device), col.to(x.device)

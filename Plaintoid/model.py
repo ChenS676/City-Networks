@@ -40,7 +40,6 @@ class MupConfig:
 # ---------------------------------------------------------------------------
 # Rotary Positional Embeddings (RoPE)
 # ---------------------------------------------------------------------------
-
 class RotaryPositionalEmbeddings(nn.Module):
     def __init__(self, dim: int, max_seq_len: int = 4096, base: int = 10_000) -> None:
         super().__init__()
@@ -171,121 +170,6 @@ class TransformerLayer(nn.Module):
         binary_tensor = torch.floor(random_tensor)
         return x.div(keep_prob) * binary_tensor
 
-
-# ---------------------------------------------------------------------------
-# Transformer Encoder
-# ---------------------------------------------------------------------------
-
-class Transformer(nn.Module):
-    def __init__(self, emb_dim, num_layers, hidden_dim, intermediate_dim, num_heads,
-                 num_walks, seq_len, attn_dropout_p: float = 0.0, ffn_dropout_p: float = 0.0,
-                 resid_dropout_p: float = 0.0, drop_path_p: float = 0.0,
-                 config: MupConfig = MupConfig()):
-        super().__init__()
-        self.mup_cfg = config
-        self.num_heads = num_heads
-        self.hidden_dim = hidden_dim
-        self.head_dim = hidden_dim // num_heads
-
-        self.layers = nn.ModuleList([
-            TransformerLayer(
-                hidden_dim, intermediate_dim, num_heads,
-                num_walks * seq_len, n_layer=num_layers,
-                attn_dropout_p=attn_dropout_p, ffn_dropout_p=ffn_dropout_p,
-                resid_dropout_p=resid_dropout_p, drop_path_p=drop_path_p,
-                config=config
-            )
-            for _ in range(num_layers)
-        ])
-
-        # Input projection
-        self.emb = nn.Linear(emb_dim, hidden_dim, bias=False)
-        # Final RMSNorm scale
-        self.norm_weight = nn.Parameter(torch.ones(hidden_dim))
-
-        nn.init.normal_(self.emb.weight, mean=0.0, std=config.init_std)
-
-    def forward(self, x, anon_indices, source_nodes=None):
-        """
-        Args:
-            x            : (batch_size, ctx_len, emb_dim)  — walk node features
-            anon_indices : list of anonymized position tensors, one per recurrent step
-            source_nodes : unused, kept for API compatibility
-
-        Returns:
-            node_emb : (batch_size, hidden_dim) — L2-normalised embedding of each source node
-        """
-        batch_size, ctx_len, _ = x.shape
-        x = self.emb(x)
-
-        for depth, idx in enumerate(reversed(anon_indices)):
-            for layer in self.layers:
-                x = layer(x, idx)
-            # Between recurrent steps: pool to last token, norm, then reshape
-            if depth < len(anon_indices) - 1:
-                x = x[:, -1, :]
-                x = F.rms_norm(x, [self.hidden_dim], eps=1e-5) * self.norm_weight
-                # n = source nodes, t = num_walks * walk_length, z = hidden_dim
-                x = rearrange(x, '(n t) z -> n t z', t=ctx_len)
-
-        x = F.rms_norm(x, [self.hidden_dim], eps=1e-5) * self.norm_weight
-        # Return L2-normalised embedding of the last (source) token
-        x = F.normalize(x[:, -1, :], dim=-1)
-        return x
-
-
-# ---------------------------------------------------------------------------
-# MLP Link Predictor
-# ---------------------------------------------------------------------------
-
-class LinkPredictorMLP(nn.Module):
-    def __init__(self, in_dim, hidden_dim, out_dim=1, num_layers=3, dropout=0.0):
-        super().__init__()
-        self.lins = nn.ModuleList()
-        if num_layers == 1:
-            self.lins.append(nn.Linear(in_dim, out_dim))
-        else:
-            self.lins.append(nn.Linear(in_dim, hidden_dim))
-            for _ in range(num_layers - 2):
-                self.lins.append(nn.Linear(hidden_dim, hidden_dim))
-            self.lins.append(nn.Linear(hidden_dim, out_dim))
-        self.dropout = dropout
-
-    def reset_parameters(self):
-        for lin in self.lins:
-            lin.reset_parameters()
-
-    def forward(self, h1, h2):
-        """Score a pair of node embeddings via element-wise product + MLP."""
-        x = h1 * h2
-        for lin in self.lins[:-1]:
-            x = lin(x)
-            x = F.relu(x)
-            x = F.dropout(x, p=self.dropout, training=self.training)
-        x = self.lins[-1](x)
-        return torch.sigmoid(x)
-
-
-# ---------------------------------------------------------------------------
-# Loss Function
-# ---------------------------------------------------------------------------
-
-def binary_cross_entropy_loss(pos_scores, neg_scores):
-    """
-    BCE loss over positive and negative edge scores.
-
-    Args:
-        pos_scores : (B,)      — scores for positive edges
-        neg_scores : (B, K)    — scores for K negative edges per positive
-
-    Returns:
-        scalar loss
-    """
-    pos_loss = -torch.log(pos_scores + 1e-15).mean()
-    neg_loss = -torch.log(1 - neg_scores + 1e-15).mean()
-    return pos_loss + neg_loss
-
-
 # ---------------------------------------------------------------------------
 # Random Walk Sampling & Anonymization
 # ---------------------------------------------------------------------------
@@ -393,5 +277,118 @@ def get_random_walk_batch(
     # Fetch features from the final recurrent step's walks
     final_raw_indices = rws_list[-1]
     batch_features = x[final_raw_indices]
-
     return batch_features, anon_indices_list
+
+
+class Transformer(nn.Module):
+    def __init__(self, emb_dim, num_layers, hidden_dim, intermediate_dim, num_heads,
+                 num_walks, seq_len, attn_dropout_p: float = 0.0, ffn_dropout_p: float = 0.0,
+                 resid_dropout_p: float = 0.0, drop_path_p: float = 0.0,
+                 config: MupConfig = MupConfig()):
+        super().__init__()
+        self.mup_cfg = config
+        self.num_heads = num_heads
+        self.hidden_dim = hidden_dim
+        self.head_dim = hidden_dim // num_heads
+
+        self.layers = nn.ModuleList([
+            TransformerLayer(
+                hidden_dim, intermediate_dim, num_heads,
+                num_walks * seq_len, n_layer=num_layers,
+                attn_dropout_p=attn_dropout_p, ffn_dropout_p=ffn_dropout_p,
+                resid_dropout_p=resid_dropout_p, drop_path_p=drop_path_p,
+                config=config
+            )
+            for _ in range(num_layers)
+        ])
+
+        # Input projection
+        self.emb = nn.Linear(emb_dim, hidden_dim, bias=False)
+        # Final RMSNorm scale
+        self.norm_weight = nn.Parameter(torch.ones(hidden_dim))
+
+        nn.init.normal_(self.emb.weight, mean=0.0, std=config.init_std)
+
+    def forward(self, x, anon_indices, source_nodes=None):
+        """
+        Args:
+            x            : (batch_size, ctx_len, emb_dim)  — walk node features
+            anon_indices : list of anonymized position tensors, one per recurrent step
+            source_nodes : unused, kept for API compatibility
+
+        Returns:
+            node_emb : (batch_size, hidden_dim) — L2-normalised embedding of each source node
+        """
+        batch_size, ctx_len, _ = x.shape
+        x = self.emb(x)
+
+        import IPython; IPython.embed()
+        for depth, idx in enumerate(reversed(anon_indices)):
+            print(depth, idx.shape)
+            for layer in self.layers:
+                x = layer(x, idx)
+            # Between recurrent steps: pool to last token, norm, then reshape
+            if depth < len(anon_indices) - 1:
+                x = x[:, -1, :]
+                x = F.rms_norm(x, [self.hidden_dim], eps=1e-5) * self.norm_weight
+                # n = source nodes, t = num_walks * walk_length, z = hidden_dim
+                x = rearrange(x, '(n t) z -> n t z', t=ctx_len)
+
+        x = F.rms_norm(x, [self.hidden_dim], eps=1e-5) * self.norm_weight
+        # Return L2-normalised embedding of the last (source) token
+        x = F.normalize(x[:, -1, :], dim=-1)
+        return x
+
+
+# ---------------------------------------------------------------------------
+# MLP Link Predictor
+# ---------------------------------------------------------------------------
+
+class LinkPredictorMLP(nn.Module):
+    def __init__(self, in_dim, hidden_dim, out_dim=1, num_layers=3, dropout=0.0):
+        super().__init__()
+        self.lins = nn.ModuleList()
+        if num_layers == 1:
+            self.lins.append(nn.Linear(in_dim, out_dim))
+        else:
+            self.lins.append(nn.Linear(in_dim, hidden_dim))
+            for _ in range(num_layers - 2):
+                self.lins.append(nn.Linear(hidden_dim, hidden_dim))
+            self.lins.append(nn.Linear(hidden_dim, out_dim))
+        self.dropout = dropout
+
+    def reset_parameters(self):
+        for lin in self.lins:
+            lin.reset_parameters()
+
+    def forward(self, h1, h2):
+        """Score a pair of node embeddings via element-wise product + MLP."""
+        x = h1 * h2
+        for lin in self.lins[:-1]:
+            x = lin(x)
+            x = F.relu(x)
+            x = F.dropout(x, p=self.dropout, training=self.training)
+        x = self.lins[-1](x)
+        return torch.sigmoid(x)
+
+
+# ---------------------------------------------------------------------------
+# Loss Function
+# ---------------------------------------------------------------------------
+
+def binary_cross_entropy_loss(pos_scores, neg_scores):
+    """
+    BCE loss over positive and negative edge scores.
+
+    Args:
+        pos_scores : (B,)      — scores for positive edges
+        neg_scores : (B, K)    — scores for K negative edges per positive
+
+    Returns:
+        scalar loss
+    """
+    pos_loss = -torch.log(pos_scores + 1e-15).mean()
+    neg_loss = -torch.log(1 - neg_scores + 1e-15).mean()
+    return pos_loss + neg_loss
+
+
