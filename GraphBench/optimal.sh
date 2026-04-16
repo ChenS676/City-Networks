@@ -15,8 +15,8 @@
 
 # ── Global hyper-parameters ──────────────────────────────────
 EPOCHS=50
-BATCH_SIZE=256
-TEST_BATCH_SIZE=64
+BATCH_SIZE=512    
+TEST_BATCH_SIZE=128
 HIDDEN_DIM=256
 NUM_LAYERS=4
 NUM_HEADS=8
@@ -30,10 +30,15 @@ LOG_EVERY=20
 NUM_HOPS=3
 GPS_ATTN=multihead
 
-DATA_ROOT="./data_graphbench"
-WANDB_PROJECT="bench_maxclique_baselines"
-DATASET="${1:-maxclique_easy}"
-GPU=0   # single A100
+# ── Python interpreter ───────────────────────────────────────
+# Use the uv venv to avoid the system python3.9 / wrong CUDA libs
+PYTHON="${PYTHON:-$(pwd)/.venv/bin/python}"
+if [ ! -f "$PYTHON" ]; then
+    echo "ERROR: venv not found at $PYTHON"
+    echo "Run: uv sync  (on a GPU node first)"
+    exit 1
+fi
+echo "Python    : $PYTHON"
 
 # ── CPU layout ───────────────────────────────────────────────
 # Detect total available cores at runtime (works on login node
@@ -41,7 +46,7 @@ GPU=0   # single A100
 TOTAL_CORES="${SLURM_CPUS_PER_TASK:-$(nproc)}"
 
 # Models to run (order = lightest → heaviest, maximises early results)
-MODELS=(gt nagphormer gps gcn sage gin)
+MODELS=(gcn sage gin gt nagphormer gps)
 NUM_MODELS=${#MODELS[@]}
 
 # Divide cores evenly; each model gets at least 1
@@ -64,23 +69,39 @@ echo "========================================================"
 
 mkdir -p logs
 
+# ── Step 1: Pre-compute LapPE once (skipped if cache exists) ─
+# echo "[$(date +%H:%M:%S)] Pre-computing LapPE (skipped if cache exists) ..."
+# "$PYTHON" pre_compute.py \
+#     --dataset_name "$DATASET" \
+#     --data_root    "$DATA_ROOT" \
+#     --lap_pe_dim   $LAP_PE_DIM
+# echo "[$(date +%H:%M:%S)] LapPE ready."
+# echo ""
+
 # ── Per-model runner ─────────────────────────────────────────
 # Args: $1=model  $2=first_cpu_core
 run_experiment() {
     local MODEL=$1
     local FIRST_CORE=$2
     local LAST_CORE=$(( FIRST_CORE + CORES_PER_MODEL - 1 ))
-    # Clamp to valid range
     local MAX_CORE=$(( TOTAL_CORES - 1 ))
     LAST_CORE=$(( LAST_CORE > MAX_CORE ? MAX_CORE : LAST_CORE ))
+    FIRST_CORE=$(( FIRST_CORE > MAX_CORE ? MAX_CORE : FIRST_CORE ))
 
     echo ""
     echo "[$(date +%H:%M:%S)] ── START $MODEL"
     echo "  CPU cores : $FIRST_CORE-$LAST_CORE"
     echo "  GPU       : $GPU"
 
-    taskset -c "$FIRST_CORE-$LAST_CORE" \
-    uv run baselines.py \
+    # Only use taskset when more than one core is available
+    if [ "$TOTAL_CORES" -gt 1 ]; then
+        TASKSET_CMD="taskset -c $FIRST_CORE-$LAST_CORE"
+    else
+        TASKSET_CMD=""
+    fi
+
+    $TASKSET_CMD \
+    "$PYTHON" baselines.py \
         --model              "$MODEL"          \
         --dataset_name       "$DATASET"        \
         --data_root          "$DATA_ROOT"      \
@@ -99,6 +120,7 @@ run_experiment() {
         --log_every          $LOG_EVERY        \
         --num_hops           $NUM_HOPS         \
         --gps_attn_type      $GPS_ATTN         \
+        --use_cached_lap_pe  true              \
         --wandb_project      "$WANDB_PROJECT"  \
         2>&1 | tee "logs/${DATASET}_${MODEL}.log"
 
@@ -125,7 +147,7 @@ run_experiment() {
 
 CORE=0
 for MODEL in "${MODELS[@]}"; do
-    run_experiment "$MODEL" "$CORE" &
+    run_experiment "$MODEL" "$CORE"
     CORE=$(( CORE + CORES_PER_MODEL ))
     # Wrap around if we run out (handles nproc=1 case)
     CORE=$(( CORE >= TOTAL_CORES ? 0 : CORE ))
