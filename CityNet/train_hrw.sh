@@ -2,10 +2,10 @@
 
 python train_hrw.py \
     --method            hierarchial_rw \
-    --dataset           shanghai \
+    --dataset           la \
     --device            0 \
     --runs              3 \
-    --seed              0 \
+    --seed              1 \
     --epochs            30000 \
     --experiment_name   HierarchialRW_CityNet_Jun25 \
     --display_step      100 \

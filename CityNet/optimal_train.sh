@@ -54,9 +54,9 @@ run_models(){
 }
 
 DATASETS=(
-    # "la"
+    "la"
     # "paris"
-    "shanghai"
+   # "shanghai"
 )
 
 for data in "${DATASETS[@]}"; do
