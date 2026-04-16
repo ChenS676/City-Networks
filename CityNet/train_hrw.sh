@@ -1,6 +1,9 @@
 #!/bin/bash
 
-python train_hrw.py \
+
+# for shanghai, la, paris
+
+CUDA_LAUNCH_BLOCKING=1 uv run train_hrw.py \
     --method            hierarchial_rw \
     --dataset           la \
     --device            0 \

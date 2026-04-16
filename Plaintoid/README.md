@@ -51,3 +51,9 @@ linkpred/
 │   └── __main__                     Data loading, model init, training loop
 │
 └── README.txt              # This file
+
+# Usage
+```
+    uv run train.py --data_name "Cora" --data_root "data/Cora"
+    python train.py --data_name "CiteSeer" --data_root "data/CiteSeer"
+```

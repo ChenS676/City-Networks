@@ -16,7 +16,7 @@ Usage:
 """
 
 import os
-os.environ["WANDB_MODE"] = "offline"
+os.environ["WANDB_MODE"] = "online"
 import wandb
 import psutil                          # pip install psutil  (CPU RAM tracking)
 import numpy as np
@@ -43,7 +43,6 @@ from ogb.linkproppred import Evaluator
 import pandas as pd
 import tqdm.auto as tqdm
 from muon import SingleDeviceMuonWithAuxAdam
-
 from evalutors import evaluate_hits, evaluate_mrr, evaluate_auc
 
 # Import all model components from the extracted model file

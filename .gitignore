@@ -36,4 +36,11 @@ results/
 Plaintoid/Cora/
 Plaintoid/data/
 Plaintoid/wandb/
-
+GraphBench/.ipynb_checkpoints/
+GraphBench/data_graphbench/
+GraphBench/logs/
+GraphBench/maxclique_easy/
+GraphBench/wandb/
+data_graphbench/
+wandb/
+.ipynb_checkpoints/

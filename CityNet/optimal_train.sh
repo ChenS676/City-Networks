@@ -8,7 +8,7 @@ run_models(){
     local k=$5
 
     local layers=(2)
-    local batch_size=5000
+    local batch_size=512
     local n_hidden=64
     local lr=5e-4
     local epochs=30000
@@ -26,7 +26,10 @@ run_models(){
         echo "Running on GPU $device_idx with CPU cores $start_core-$end_core"
 
         CUDA_LAUNCH_BLOCKING=1 \
-        taskset -c $start_core-$end_core python train.py \
+        # taskset -c $start_core-$end_core python train.py \
+        # # BEFORE
+        # AFTER
+        python train.py \
             --device $device_idx \
             --method $model \
             --dataset $DATASET \
@@ -66,7 +69,7 @@ for data in "${DATASETS[@]}"; do
     # run_models "$data" nagphormer 0 0 16 &
     # pid1=$!
 
-    run_models "$data" graphgps 0 0 16 &
+    run_models "$data" graphgps 0 0 15 &
     pid2=$!
 
     # wait $pid1

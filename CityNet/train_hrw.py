@@ -20,11 +20,11 @@ Usage:
     python train.py --method gcn   --dataset paris --device 0
 
     # HierarchialRW
-    python train.py --method hierarchial_rw --dataset paris --device 0 \
+    python train_hrw.py --method hierarchial_rw --dataset paris --device 0 \
         --hierarchial_rw_walk_length 8 --hierarchial_rw_num_walks 16 --hierarchial_rw_hidden_dim 128
 """
-
 import os
+os.environ["WANDB_MODE"] = "online"
 import csv
 import math
 import time
@@ -256,16 +256,22 @@ def anonymize_rws(rws: torch.Tensor, rev_walks: bool = True) -> torch.Tensor:
 
 @torch.no_grad()
 def get_random_walk_batch(
-    adj: SparseTensor, x: torch.Tensor, start_nodes: torch.Tensor,
-    walk_length: int, num_walks: int, recurrent_steps: int = 1,
-    p: float = 1.0, q: float = 1.0,
+    adj: SparseTensor, 
+    x: torch.Tensor, 
+    start_nodes: torch.Tensor,
+    walk_length: int, 
+    num_walks: int, 
+    recurrent_steps: int = 1,
+    p: float = 1.0, 
+    q: float = 1.0,
 ) -> Tuple[torch.Tensor, List[torch.Tensor]]:
     row, col, _ = adj.coo()
     row, col    = row.to(x.device), col.to(x.device)
     current     = start_nodes
     rws_list    = []
-
+    
     for _ in range(recurrent_steps):
+        
         src   = current.repeat_interleave(num_walks)
         walks = cluster_random_walk(row, col, src, walk_length - 1,
                                     p=p, q=q, num_nodes=adj.size(0))
@@ -274,7 +280,6 @@ def get_random_walk_batch(
         rws_list.append(rws)
         if recurrent_steps > 1:
             current = rws.reshape(-1)
-
     anon = [anonymize_rws(r, rev_walks=True) for r in rws_list]
     return x[rws_list[-1]], anon
 
@@ -627,9 +632,7 @@ def main(args, logging_dict):
                                             args.hierarchial_rw_batch_size, device,
                                             args.hierarchial_rw_node2vec_p, args.hierarchial_rw_node2vec_q)
         else:
-            train_acc, train_f1, train_loss = train_gnn(model, train_loader, optimizer, device)
-            val_acc,   val_f1               = eval_gnn(model, val_loader,   device)
-            test_acc,  test_f1              = eval_gnn(model, test_loader,   device)
+            pass
 
         epoch_time = time.time() - t0
 
@@ -655,6 +658,14 @@ def main(args, logging_dict):
             best_model_sd = deepcopy(model.state_dict())
             wandb.run.summary['best_val_acc']  = best_val_acc
             wandb.run.summary['best_test_acc'] = best_test_acc
+
+        # W&B logging
+        wandb.log({
+            'epoch':      epoch + 1,
+            'best_test_acc':   best_test_acc,
+            'best_test_f1':    best_test_f1,
+            'epoch_time': epoch_time,
+        })
 
         # Progress display
         if (epoch + 1) % args.display_step == 0 or epoch == 0:

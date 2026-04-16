@@ -1,0 +1,53 @@
+[project]
+name = "cwue-graphbench"
+version = "0.1.0"
+description = "HRW Transformer for GraphBench node classification (MaxClique)"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    # ── Core deep learning ────────────────────────────────────────────────
+    "torch==2.7.0",
+    "torchvision==0.22.0",
+    # ── PyG ecosystem (versions must match torch+cuda build) ─────────────
+    "torch-geometric>=2.6.1",
+    "torch-scatter==2.1.2",
+    "torch-sparse==0.6.18",
+    "torch-cluster==1.6.3",
+    # ── Optimizer ─────────────────────────────────────────────────────────
+    "muon-optimizer",               # KellerJordan/Muon — see [tool.uv.sources]
+    # ── Graph utilities ───────────────────────────────────────────────────
+    "graphbench-lib",               # internal benchmark lib — see [tool.uv.sources]
+    "networkx>=3.5",
+    "scipy>=1.13.0",
+    # ── ML utilities ──────────────────────────────────────────────────────
+    "einops>=0.8.1",
+    "numpy>=2.3.0",
+    "wandb>=0.21.0",
+    "tqdm>=4.67.0",
+    # ── Visualisation / misc ──────────────────────────────────────────────
+    "matplotlib>=3.10.3",
+    "pandas>=2.3.0",
+    "ipython>=9.12.0",
+]
+
+# ── Custom / private source overrides ─────────────────────────────────────
+[tool.uv.sources]
+muon-optimizer = { git = "https://github.com/KellerJordan/Muon" }
+graphbench-lib = { git = "https://github.com/graphbench/package" }
+torch          = [{ index = "pytorch" }]
+torchvision    = [{ index = "pytorch" }]
+torch-scatter  = [{ index = "pytorch-geometric" }]
+torch-sparse   = [{ index = "pytorch-geometric" }]
+torch-cluster  = [{ index = "pytorch-geometric" }]
+
+# ── Package indices ────────────────────────────────────────────────────────
+[[tool.uv.index]]
+name     = "pytorch"
+url      = "https://download.pytorch.org/whl/cu128"
+explicit = true
+
+[[tool.uv.index]]
+name     = "pytorch-geometric"
+url      = "https://data.pyg.org/whl/torch-2.7.0+cu128.html"
+format   = "flat"
+explicit = true
