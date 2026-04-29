@@ -28,6 +28,7 @@ dependencies = [
     "wandb>=0.21.0",
     "graphbench-lib",
     "jupytext>=1.19.1",
+    "pybind11>=3.0.4",
 ]
 
 [tool.uv.sources]

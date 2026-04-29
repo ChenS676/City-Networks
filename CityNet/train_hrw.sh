@@ -14,9 +14,9 @@ CUDA_LAUNCH_BLOCKING=1 uv run train_hrw.py \
     --display_step      100 \
     --weight_decay      1e-5 \
     --save_model \
-    --hierarchial_rw_walk_length      8 \
-    --hierarchial_rw_num_walks        16 \
-    --hierarchial_rw_recurrent_steps  1 \
+    --hierarchial_rw_walk_length      8 \ 
+    --hierarchial_rw_num_walks        4 \  
+    --hierarchial_rw_recurrent_steps  2 \
     --hierarchial_rw_hidden_dim       128 \
     --hierarchial_rw_num_layers       1 \
     --hierarchial_rw_num_heads        16 \

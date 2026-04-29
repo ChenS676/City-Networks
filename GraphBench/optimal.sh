@@ -48,7 +48,7 @@ echo "Python : $PYTHON"
 if [ -n "$1" ]; then
     read -ra DATASETS <<< "$1"
 else
-    DATASETS=(maxclique_medium maxclique_hard)
+    DATASETS=(maxclique_hard)
 fi
 
 # ── Models ───────────────────────────────────────────────────

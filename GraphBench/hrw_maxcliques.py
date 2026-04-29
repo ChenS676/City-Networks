@@ -25,6 +25,7 @@ from torch_geometric.utils import to_undirected, is_undirected, to_networkx, rem
 from torch_scatter import scatter_max, scatter_mean, scatter_add
 import time
 from graphbench.helpers.utils import set_seed
+from torch_geometric.utils import degree
 import networkx as nx
 import torch.compiler
 
@@ -57,6 +58,47 @@ class AddUndirectedContext(object):
 # ==========================================
 
 def compute_neural_walker_pe(walks, edge_index, num_nodes, window_size=8):
+    """
+    Compute NeuralWalker-style positional encodings for a batch of random walks.
+
+    For each walk token at position ``t``, two families of binary features are
+    computed by scanning backwards over a context window of size ``window_size``:
+
+    **Identity features** (``window_size`` channels):
+        ``id_feats[k][t] = 1``  iff  ``walks[t] == walks[t-k]``,
+        i.e. the current node was already visited ``k`` steps ago.
+        Captures node revisit patterns and encodes structural periodicity
+        within the walk (analogous to identity encoding in CRaWL).
+
+    **Adjacency features** (``window_size`` channels):
+        ``adj_feats[k][t] = 1``  iff  edge ``(walks[t-k], walks[t])`` exists
+        in the graph, regardless of whether that edge was actually traversed.
+        Captures off-walk structural connectivity between walk-visited nodes,
+        enabling detection of triangles, chords, and higher-order motifs that
+        pure identity encoding misses.
+
+    Both families are zero-padded at the start of each walk so that token ``t``
+    always has exactly ``window_size`` identity channels and ``window_size``
+    adjacency channels, giving a total of ``2 * window_size`` features per token.
+
+    Args:
+        walks       (Tensor): Shape ``[B, W, L]`` — batched random walks where
+                              ``B`` is batch size, ``W`` is walks per node, and
+                              ``L`` is walk length.
+        edge_index  (Tensor): Shape ``[2, E]`` — graph connectivity as
+                              (source, destination) node index pairs.
+        num_nodes   (int):    Total number of nodes in the graph. Used to
+                              build unique edge hashes ``src * num_nodes + dst``
+                              for O(log E) adjacency lookup via ``searchsorted``.
+        window_size (int):    Number of look-back steps to consider.
+                              Produces ``window_size`` identity and
+                              ``window_size`` adjacency channels. Default ``8``.
+
+    Returns:
+        Tensor: Shape ``[B, W, L, 2 * window_size]``.
+                The last dimension is ``[id_k=1, …, id_k=W, adj_k=1, …, adj_k=W]``.
+                All values are ``0.0`` or ``1.0`` (binary float).
+    """
     device = walks.device
     B, W, L = walks.shape
     id_feats, adj_feats = [], []
@@ -294,7 +336,10 @@ class Transformer(nn.Module):
         ])
         self.norm_weight = nn.Parameter(torch.ones(hidden_dim))
 
-    def forward(self, x, anon_indices, source_nodes=None):
+    def forward(self, 
+        x, 
+        anon_indices, 
+        source_nodes=None):
         # x: [N, num_walks * walk_length, encoding_dim]
         # anon_indices: list of [N, num_walks * walk_length] anonymised walk indices
         # For recurrent_steps > 1, anon_indices has multiple entries.
@@ -474,7 +519,6 @@ class RWTransformerForNodeClassification(nn.Module):
         if walk_ea.dim() == 1: walk_ea = walk_ea.unsqueeze(-1)
         walk_ea_emb = self.input_norm(self.edge_encoder(walk_ea.float()))
 
-        import IPython; IPython.embed()
         batch_feats, anon_idx, raw_walks = get_random_walk_batch(
             edge_index=walk_ei, x=x_emb,
             start_nodes=torch.arange(x.size(0), device=x.device),
@@ -904,3 +948,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+# best uv run hrw_maxcliques.py --dataset_name maxclique_easy --walk_length 8 --num_walks 10 

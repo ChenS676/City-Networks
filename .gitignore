@@ -44,3 +44,6 @@ GraphBench/wandb/
 data_graphbench/
 wandb/
 .ipynb_checkpoints/
+
+# Ignore all PyTorch model files in any directory
+**/*.pt

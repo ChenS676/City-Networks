@@ -473,8 +473,8 @@ def main(args, logging_dict):
 
     # ── Dataset ──────────────────────────────────────────────────────────────
     if args.dataset in ['Cora', 'CiteSeer', 'PubMed']:
-        dataset = Planetoid(root=f'data/{args.dataset}', name=args.dataset)
-        data    = dataset[0]
+        raise ValueError(
+            "Use train_gnn.py for Planetoid datasets (Cora, CiteSeer, PubMed) — ")
     else:
         dataset = CityNetwork(root=f'data/{args.dataset}', name=args.dataset)
         data    = dataset[0]
@@ -606,8 +606,12 @@ def main(args, logging_dict):
             for pg in optimizer.param_groups:
                 if pg.get('use_muon', False):
                     pg['lr'] = trapezoidal_lr(
-                        global_step, args.hierarchial_rw_muon_max_lr, args.hierarchial_rw_muon_min_lr,
-                        warmup_steps, cool_steps, total_steps
+                        global_step, 
+                        args.hierarchial_rw_muon_max_lr, 
+                        args.hierarchial_rw_muon_min_lr,
+                        warmup_steps, 
+                        cool_steps, 
+                        total_steps
                     )
 
             train_acc, train_f1, train_loss = train_hierarchial_rw_epoch(

@@ -1,0 +1,4 @@
+model,dataset,seed,hidden_dim,num_layers,batch_size,adam_max_lr,epochs,dropout,total_params,best_val_f1,best_test_f1,best_val_step,final_val_f1,final_test_f1,runtime_sec
+gcn,maxclique_hard,2025,256,4,256,0.0001,10,0.1,530706,0.7395,0.2944,3870,0.7395,0.1648,260.7
+sage,maxclique_hard,2025,256,4,256,0.0001,10,0.1,792850,0.7466,0.177,3096,0.7116,0.1572,273.9
+gin,maxclique_hard,2025,256,4,512,0.0001,10,0.1,795926,0.7567,0.2262,1351,0.7049,0.2256,94.7

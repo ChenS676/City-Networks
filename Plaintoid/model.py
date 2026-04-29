@@ -270,6 +270,7 @@ def get_random_walk_batch(
         # Next recurrent step sources = all nodes visited in current walks
         if recurrent_steps > 1:
             current_sources = rws.reshape(-1)
+            import pdb; pdb.set_trace()
 
     # Anonymize each step's walks independently
     anon_indices_list = [anonymize_rws(rws, rev_walks=True) for rws in rws_list]
@@ -322,9 +323,7 @@ class Transformer(nn.Module):
         batch_size, ctx_len, _ = x.shape
         x = self.emb(x)
 
-        import IPython; IPython.embed()
         for depth, idx in enumerate(reversed(anon_indices)):
-            print(depth, idx.shape)
             for layer in self.layers:
                 x = layer(x, idx)
             # Between recurrent steps: pool to last token, norm, then reshape
