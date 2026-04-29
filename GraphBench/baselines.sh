@@ -32,7 +32,7 @@ GPS_ATTN=multihead
 
 DATA_ROOT="./data_graphbench"
 WANDB_PROJECT="bench_maxclique_baselines"
-DATASET="${1:-maxclique_easy}"
+DATASET="${1:-maxclique_medium}"
 GPU=0   # single A100
 
 # ── CPU layout ───────────────────────────────────────────────
@@ -41,7 +41,7 @@ GPU=0   # single A100
 TOTAL_CORES="${SLURM_CPUS_PER_TASK:-$(nproc)}"
 
 # Models to run (order = lightest → heaviest, maximises early results)
-MODELS=(gt nagphormer gps gcn sage gin)
+MODELS=(gt nagphormer gps)
 NUM_MODELS=${#MODELS[@]}
 
 # Divide cores evenly; each model gets at least 1
